@@ -1,21 +1,50 @@
 import socket
-from threading import Thread
+import threading
 import time
+import task_lib_primal
+import sys
 
-class serv_thread(Thread):
+data = threading.local()
 
-    callBack = lambda : 2
+class serv_thread(threading.Thread):
 
-    def __init__(self, callBack):
-        Thread.__init__(self)
-        self.callBack = callBack
+    isStop = False
+
+    def __init__(self, port):
+        self.port = port
+        threading.Thread.__init__(self)
+
 
     def run(self):
+        data.x = self.name
+        data.port = self.port
         while True:
-            time.sleep(1)
-            self.callBack()
+            if serv.varbose: print ('thread: {} port: {}'.format(data.x, data.port))
+            code = serv.new_server_conn(data.port)
+            if code == 'NO_TASK':
+                print ('stop: ', data.x)
+                serv_thread.isStop = True
+                break
+
+class watcher(threading.Thread):
+    def __init__(self, server):
+        self.server = server
+        threading.Thread.__init__(self)
+
+    def run(self):
+        while (True):
+            if serv_thread.isStop:
+                print ('stopping...')
+                self.server.send_trash()
+                break
+        print (self.server.tasker.answers)
 
 class serv:
+
+    varbose = False
+
+    isStop = False
+    tasker  = task_lib_primal.abstract_tasker()
 
     pull = []
     threads = []
@@ -28,36 +57,68 @@ class serv:
 
     def start_serv(self):
         for port in self.pull:
-            print(port)
-            self.threads.append(serv_thread(lambda : self.new_server_conn(port)))
+            self.threads.append(serv_thread(port))
+            
 
-        for thread in self.threads:
+        for thread in self.threads:    
             thread.start()
 
-    def new_server_conn(self, port):
+        watch = watcher(self)
+        watch.run()
+
+    def send_trash(self):
+        clnt = client()
+        for sock in self.pull:
+            try:
+                clnt.new_client_conn('127.0.0.1', sock)
+            except Exception:
+                print ('closed ', sock)
+
+    @staticmethod
+    def new_server_conn(port):
         sock = socket.socket()
-        print(port)
-        sock.bind(('', port))
+        if serv.varbose: print(port)
+        try:
+            sock.bind(('', port))
+        except Exception:
+            print ('cant create connection on ', port)
+            return
+        if serv.varbose: print ('created connection on {}'.format(port))
         sock.listen(1)
         conn, addr = sock.accept()
-        self.do_connection(conn)
+        code = serv.do_connection(conn)
+        if code == 'NO_TASK':
+            return 'NO_TASK'
 
-    def do_connection(self, conn):
+    @staticmethod
+    def do_connection(conn):
         while True:
             data = conn.recv(1024)
             if not data:
                 break
-            print (data)
-            self.send_task(conn)
+            if serv.varbose: print (data)
+            code = serv.send_task(conn)
+            if code == 'NO_TASK':
+                return 'NO_TASK'
             data = conn.recv(1024)
-            print (data)
+            if serv.varbose: print (data)
+            serv.tasker.add_answer(data)
+            sys.stdout.write('progress: {}\r'.format(serv.tasker.status()))
         conn.close()
 
 
-    def send_task(self, conn):
-        conn.send('task'.encode())
+    @staticmethod
+    def send_task(conn):
+        task = serv.tasker.get_task()
+        if serv.varbose:  print ('task: ', task)
+        if task == 'NO_TASK':
+            conn.send('NO_TASK'.encode())
+            return 'NO_TASK'
+        conn.send(task.encode())
 
 class client:
+
+    solver = lambda x: x
 
     def new_client_conn(self, host, port):
         sock = socket.socket()
@@ -65,10 +126,16 @@ class client:
         sock.send('new request'.encode())
 
         data = sock.recv(1024)
-        print(data)
-        self.send_answer(sock)
+        if serv.varbose: print(data)
+        code = self.send_answer(sock, data)
+        if code == 'NO_TASK':
+            return 'NO_TASK'
         # sock.close()
 
 
-    def send_answer(self, sock):
-        sock.send('answer'.encode())
+    def send_answer(self, sock, data):
+        if data == 'NO_TASK':
+            return 'NO_TASK'
+        ans = self.solver(data)
+        if serv.varbose: print (ans)
+        sock.send(ans.encode())
